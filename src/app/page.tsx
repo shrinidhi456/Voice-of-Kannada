@@ -54,9 +54,6 @@ export default function Home() {
               </span>
             </div>
           </div>
-          <span className="text-xs px-3 py-1 rounded-full font-medium bg-amber-100 dark:bg-amber-950 text-amber-900 dark:text-amber-200 border border-amber-300/40">
-            Hackathon MVP
-          </span>
         </div>
       </header>
 
