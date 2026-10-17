@@ -9,13 +9,20 @@ export function generateStaticParams() {
   ];
 }
 
-export default async function ScenarioPage({
+async function ScenarioContent({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  return <ScenarioChatClient id={id} />;
+}
 
+export default function ScenarioPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
   return (
     <Suspense
       fallback={
@@ -27,7 +34,7 @@ export default async function ScenarioPage({
         </div>
       }
     >
-      <ScenarioChatClient id={id} />
+      <ScenarioContent params={params} />
     </Suspense>
   );
 }
