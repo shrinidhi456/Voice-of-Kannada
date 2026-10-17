@@ -1,7 +1,9 @@
+import Link from "next/link";
+
 export default function Home() {
   const scenarios = [
     {
-      id: "auto-rickshaw",
+      id: "auto",
       title: "Auto-rickshaw",
       kannadaTitle: "ಆಟೋ ರಿಕ್ಷಾ",
       tag: "Everyday Travel",
@@ -76,9 +78,10 @@ export default function Home() {
         {/* Scenarios Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8">
           {scenarios.map((scenario) => (
-            <div
+            <Link
               key={scenario.id}
-              className={`group relative rounded-2xl border p-7 transition-all duration-300 hover:shadow-xl hover:-translate-y-1.5 flex flex-col justify-between bg-white/80 dark:bg-stone-900/80 backdrop-blur-sm ${scenario.accentColor} bg-gradient-to-br ${scenario.bgGradient}`}
+              href={`/scenario/${scenario.id}`}
+              className={`group relative rounded-2xl border p-7 transition-all duration-300 hover:shadow-xl hover:-translate-y-1.5 flex flex-col justify-between bg-white/80 dark:bg-stone-900/80 backdrop-blur-sm cursor-pointer ${scenario.accentColor} bg-gradient-to-br ${scenario.bgGradient}`}
             >
               <div>
                 <div className="flex items-center justify-between mb-4">
@@ -114,15 +117,14 @@ export default function Home() {
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  className="w-full py-2.5 px-4 rounded-xl text-sm font-semibold bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 hover:bg-stone-800 dark:hover:bg-white transition-colors flex items-center justify-center gap-2 group-hover:shadow-md cursor-pointer"
+                <div
+                  className="w-full py-2.5 px-4 rounded-xl text-sm font-semibold bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 hover:bg-stone-800 dark:hover:bg-white transition-colors flex items-center justify-center gap-2 group-hover:shadow-md"
                 >
                   <span>Select Scenario</span>
                   <span className="transition-transform group-hover:translate-x-1">→</span>
-                </button>
+                </div>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       </main>
