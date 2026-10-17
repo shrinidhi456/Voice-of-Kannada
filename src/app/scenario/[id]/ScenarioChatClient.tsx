@@ -88,48 +88,91 @@ export default function ScenarioChatClient({ id }: { id: string }) {
     }
   }, []);
 
-  // Speak Kannada reply aloud using browser speechSynthesis
-  const speakKannada = (kannadaText: string, msgId: string) => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      return;
+  const activeAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Play Kannada audio using browser speechSynthesis if voice is present, or /api/tts server fallback
+  const speakKannada = async (kannadaText: string, msgId: string) => {
+    if (typeof window === "undefined") return;
+
+    // Stop any existing synthesis or server audio
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    if (activeAudioRef.current) {
+      activeAudioRef.current.pause();
+      activeAudioRef.current = null;
     }
 
+    setSpeakingMsgId(msgId);
+
+    // 1. If local device has a Kannada voice, use browser speechSynthesis
+    if (hasKannadaVoice && "speechSynthesis" in window) {
+      try {
+        const voices = window.speechSynthesis.getVoices();
+        const kannadaVoice = voices.find(
+          (v) =>
+            v.lang.toLowerCase() === "kn-in" ||
+            v.lang.toLowerCase().startsWith("kn") ||
+            v.name.toLowerCase().includes("kannada")
+        );
+
+        const utterance = new SpeechSynthesisUtterance(kannadaText);
+        utterance.lang = "kn-IN";
+        utterance.rate = 0.9;
+        if (kannadaVoice) {
+          utterance.voice = kannadaVoice;
+        }
+
+        utterance.onend = () => {
+          setSpeakingMsgId(null);
+        };
+        utterance.onerror = () => {
+          setSpeakingMsgId(null);
+        };
+
+        window.speechSynthesis.speak(utterance);
+        return;
+      } catch (err) {
+        console.warn("Browser speechSynthesis error, falling back to server TTS:", err);
+      }
+    }
+
+    // 2. Server fallback via Gemini Text-to-Speech API (/api/tts)
     try {
-      window.speechSynthesis.cancel();
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: kannadaText }),
+      });
 
-      const voices = window.speechSynthesis.getVoices();
-      const kannadaVoice = voices.find(
-        (v) =>
-          v.lang.toLowerCase() === "kn-in" ||
-          v.lang.toLowerCase().startsWith("kn") ||
-          v.name.toLowerCase().includes("kannada")
-      );
-
-      const utterance = new SpeechSynthesisUtterance(kannadaText);
-      utterance.lang = "kn-IN";
-      utterance.rate = 0.9; // Slightly measured pace for language learning
-
-      if (kannadaVoice) {
-        utterance.voice = kannadaVoice;
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || `TTS server responded with status ${res.status}`);
       }
 
-      setSpeakingMsgId(msgId);
+      const audioBlob = await res.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+      activeAudioRef.current = audio;
 
-      utterance.onend = () => {
+      audio.onended = () => {
         setSpeakingMsgId(null);
+        URL.revokeObjectURL(audioUrl);
+        activeAudioRef.current = null;
       };
 
-      utterance.onerror = (e) => {
-        if (e.error !== "canceled" && e.error !== "interrupted") {
-          console.warn("Speech synthesis notice:", e.error);
-        }
+      audio.onerror = (e) => {
+        console.warn("Audio playback error:", e);
         setSpeakingMsgId(null);
+        URL.revokeObjectURL(audioUrl);
+        activeAudioRef.current = null;
       };
 
-      window.speechSynthesis.speak(utterance);
-    } catch (err) {
-      console.warn("Speech synthesis error:", err);
+      await audio.play();
+    } catch (err: unknown) {
       setSpeakingMsgId(null);
+      const msg = err instanceof Error ? err.message : "Failed to play audio.";
+      setErrorMessage(`Audio Notice: ${msg}`);
     }
   };
 
@@ -345,7 +388,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
             <div className="max-w-4xl mx-auto w-full flex items-center gap-2">
               <span>ℹ️</span>
               <span>
-                <strong>Note:</strong> No Kannada voice (kn-IN) is installed in your browser/OS. Speech playback may use a system fallback voice, but full Kannada script, romanization, and English translations are provided below.
+                <strong>Notice:</strong> No local Kannada voice (kn-IN) is detected on this device. Audio playback will automatically use the Gemini TTS server fallback.
               </span>
             </div>
           </div>
