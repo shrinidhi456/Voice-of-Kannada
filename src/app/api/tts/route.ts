@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
+import { checkRateLimit, validateRequestBody } from "@/lib/rateLimit";
 
 // Official Gemini TTS model from Google AI documentation:
 // https://ai.google.dev/gemini-api/docs/models/gemini
@@ -49,7 +50,19 @@ function pcmToWav(
 
 export async function POST(req: NextRequest) {
   try {
-    const { text }: { text?: string } = await req.json();
+    // 1. Rate limiting: at most 20 requests per minute per IP address
+    const rateLimit = checkRateLimit(req);
+    if (!rateLimit.allowed && rateLimit.response) {
+      return rateLimit.response;
+    }
+
+    // 2. Reject request bodies larger than 20 KB
+    const bodyResult = await validateRequestBody<{ text?: string }>(req);
+    if (bodyResult.response) {
+      return bodyResult.response;
+    }
+
+    const { text } = bodyResult.data || {};
 
     if (!text || !text.trim()) {
       return NextResponse.json(

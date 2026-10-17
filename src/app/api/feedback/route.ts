@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { calculatePronunciationScore } from "@/lib/pronunciation";
+import { checkRateLimit, validateRequestBody } from "@/lib/rateLimit";
 
 export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
 export const GEMINI_MODEL = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
@@ -24,17 +25,29 @@ function extractJson(raw: string) {
 
 export async function POST(req: NextRequest) {
   try {
+    // 1. Rate limiting: at most 20 requests per minute per IP address
+    const rateLimit = checkRateLimit(req);
+    if (!rateLimit.allowed && rateLimit.response) {
+      return rateLimit.response;
+    }
+
+    // 2. Reject request bodies larger than 20 KB
+    const bodyResult = await validateRequestBody<{
+      targetPhrase?: string;
+      romanization?: string;
+      spokenTranscript?: string;
+      score?: number;
+    }>(req);
+    if (bodyResult.response) {
+      return bodyResult.response;
+    }
+
     const {
       targetPhrase,
       romanization,
       spokenTranscript,
       score: incomingScore,
-    }: {
-      targetPhrase?: string;
-      romanization?: string;
-      spokenTranscript?: string;
-      score?: number;
-    } = await req.json();
+    } = bodyResult.data || {};
 
     if (!targetPhrase || !spokenTranscript) {
       return NextResponse.json(

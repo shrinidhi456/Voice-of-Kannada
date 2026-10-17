@@ -365,10 +365,10 @@ export default function ScenarioChatClient({ id }: { id: string }) {
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        throw new Error(data.error || "Failed to receive response from character.");
+        throw new Error(data?.error || `Server responded with status ${res.status}`);
       }
 
       const aiMsg: ChatMessage = {
@@ -509,9 +509,9 @@ export default function ScenarioChatClient({ id }: { id: string }) {
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
       if (!res.ok) {
-        throw new Error(data.error || "Could not generate pronunciation tip.");
+        throw new Error(data?.error || `Could not generate pronunciation tip (${res.status})`);
       }
 
       setPracticeCardStates((prev) => ({
@@ -644,6 +644,25 @@ export default function ScenarioChatClient({ id }: { id: string }) {
             </div>
           </div>
         )}
+
+        {/* Global error / notice banner (e.g. rate limit 429) */}
+        {errorMessage && (
+          <div className="bg-red-50 dark:bg-red-950/70 border-t border-b border-red-300 dark:border-red-800 px-4 py-3 text-xs text-red-900 dark:text-red-200">
+            <div className="max-w-4xl mx-auto w-full flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <span className="text-base shrink-0">⚠️</span>
+                <span className="font-medium leading-relaxed">{errorMessage}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setErrorMessage(null)}
+                className="px-2 py-0.5 rounded text-[11px] font-bold bg-red-100 hover:bg-red-200 dark:bg-red-900/60 dark:hover:bg-red-900 text-red-800 dark:text-red-200 shrink-0 cursor-pointer transition-colors"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
       {/* ================= TAB 1: CONVERSATION (UNTOUCHED CHAT FLOW) ================= */}
@@ -760,30 +779,6 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                     {scenario.characterName} is replying in Kannada...
                   </span>
                 </div>
-              </div>
-            )}
-
-            {/* Error message banner */}
-            {errorMessage && (
-              <div className="rounded-xl bg-red-50 dark:bg-red-950/60 border border-red-300 dark:border-red-800/80 p-4 text-xs text-red-900 dark:text-red-200 shadow-sm flex items-start justify-between gap-3">
-                <div className="flex items-start gap-2.5">
-                  <span className="text-lg shrink-0">⚠️</span>
-                  <div className="space-y-1">
-                    <p className="font-semibold text-red-950 dark:text-red-100">
-                      Notice
-                    </p>
-                    <p className="leading-relaxed whitespace-pre-wrap text-stone-800 dark:text-stone-200">
-                      {errorMessage}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setErrorMessage(null)}
-                  className="px-2.5 py-1 rounded-md text-xs font-semibold bg-red-100 hover:bg-red-200 dark:bg-red-900/60 dark:hover:bg-red-900 text-red-800 dark:text-red-200 transition-colors shrink-0 cursor-pointer"
-                >
-                  Dismiss
-                </button>
               </div>
             )}
 
@@ -1155,9 +1150,13 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                             </div>
                           </div>
                         ) : state.tipError ? (
-                          <p className="text-[11px] text-stone-400 italic">
-                            Could not load AI sound tip: {state.tipError}
-                          </p>
+                          <div className="rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/60 p-2.5 text-xs text-red-800 dark:text-red-300 flex items-start gap-2">
+                            <span className="shrink-0">⚠️</span>
+                            <div>
+                              <span className="font-semibold block text-[11px] mb-0.5">Notice:</span>
+                              <span className="leading-relaxed">{state.tipError}</span>
+                            </div>
+                          </div>
                         ) : null}
                       </div>
                     </div>

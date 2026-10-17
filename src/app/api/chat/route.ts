@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
+import { checkRateLimit, validateRequestBody } from "@/lib/rateLimit";
 
 // 1. Current stable Gemini Flash model from official docs:
 // https://ai.google.dev/gemini-api/docs/models/gemini
@@ -35,18 +36,29 @@ function extractJson(raw: string) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    // 1. Rate limiting: at most 20 requests per minute per IP address
+    const rateLimit = checkRateLimit(req);
+    if (!rateLimit.allowed && rateLimit.response) {
+      return rateLimit.response;
+    }
+
+    // 2. Reject request bodies larger than 20 KB
+    const bodyResult = await validateRequestBody<{
+      role?: string;
+      systemPrompt?: string;
+      history?: ChatMessage[];
+      userMessage?: string;
+    }>(req);
+    if (bodyResult.response) {
+      return bodyResult.response;
+    }
+
     const {
       role,
       systemPrompt,
       history = [],
       userMessage,
-    }: {
-      role?: string;
-      systemPrompt?: string;
-      history?: ChatMessage[];
-      userMessage?: string;
-    } = body;
+    } = bodyResult.data || {};
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey || apiKey.trim() === "" || apiKey === "your_gemini_api_key_here") {
