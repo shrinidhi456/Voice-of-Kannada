@@ -469,15 +469,22 @@ export default function ScenarioChatClient({ id }: { id: string }) {
 
         {/* Error message banner */}
         {errorMessage && (
-          <div className="rounded-xl bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-900/60 p-4 text-xs text-red-800 dark:text-red-200 flex items-start justify-between gap-3">
-            <div className="flex items-start gap-2">
-              <span className="text-base shrink-0">⚠️</span>
-              <span>{errorMessage}</span>
+          <div className="rounded-xl bg-red-50 dark:bg-red-950/60 border border-red-300 dark:border-red-800/80 p-4 text-xs text-red-900 dark:text-red-200 shadow-sm flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <span className="text-lg shrink-0">⚠️</span>
+              <div className="space-y-1">
+                <p className="font-semibold text-red-950 dark:text-red-100">
+                  AI Model Notice
+                </p>
+                <p className="leading-relaxed whitespace-pre-wrap text-stone-800 dark:text-stone-200">
+                  {errorMessage}
+                </p>
+              </div>
             </div>
             <button
               type="button"
               onClick={() => setErrorMessage(null)}
-              className="font-bold hover:underline shrink-0"
+              className="px-2.5 py-1 rounded-md text-xs font-semibold bg-red-100 hover:bg-red-200 dark:bg-red-900/60 dark:hover:bg-red-900 text-red-800 dark:text-red-200 transition-colors shrink-0 cursor-pointer"
             >
               Dismiss
             </button>

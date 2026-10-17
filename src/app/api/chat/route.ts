@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 
+// 1. Current stable Gemini Flash model from official docs:
+// https://ai.google.dev/gemini-api/docs/models/gemini
+export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+export const GEMINI_MODEL = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
+
 interface ChatMessage {
   sender: "user" | "ai";
   kannada?: string;
@@ -79,7 +84,7 @@ Scenario Context: ${systemPrompt || "Conversational Kannada practice"}
 
 Target Audience: Non-Kannada speaker practicing spoken Kannada in Bengaluru.
 Tone & Style:
-- Use simple, spoken, everyday Bengaluru Kannada (colloquial words like 'saar', 'hogi', 'kodi', 'beka', 'eshtu', 'aaythu', 'banni').
+- Use simple, spoken, everyday Bengaluru Kannada (colloquial words like 'saar', 'hogi', 'kodi', 'beka', 'eshtu', 'aaythu', 'banni', 'samosa').
 - Keep reply brief: 1 to 2 short conversational sentences.
 - Avoid overly complex, bookish, or Sanskritized Kannada.
 
@@ -101,37 +106,63 @@ JSON Reply:`;
 
     const ai = new GoogleGenAI({ apiKey });
 
-    // Try current free flash models: gemini-2.5-flash, fallback to gemini-2.0-flash or gemini-1.5-flash
-    const candidateModels = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
     let rawText = "";
-    let lastError: unknown = null;
+    try {
+      const response = await ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: promptText,
+        config: {
+          responseMimeType: "application/json",
+        },
+      });
 
-    for (const modelName of candidateModels) {
-      try {
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: promptText,
-          config: {
-            responseMimeType: "application/json",
-          },
-        });
-        if (response && response.text) {
-          rawText = response.text;
-          break;
-        }
-      } catch (err) {
-        lastError = err;
-        // Try next candidate model
-        continue;
+      if (response && response.text) {
+        rawText = response.text;
       }
+    } catch (err: unknown) {
+      console.error(`Gemini API error with model [${GEMINI_MODEL}]:`, err);
+      let errorMsg = err instanceof Error ? err.message : String(err);
+      let status = 502;
+
+      // Extract JSON error payload if returned by Google API
+      try {
+        const parsed = JSON.parse(errorMsg);
+        if (parsed?.error) {
+          const code = parsed.error.code;
+          const msg = parsed.error.message || "";
+          const statusStr = parsed.error.status || "";
+
+          if (code === 403 || statusStr === "PERMISSION_DENIED") {
+            errorMsg = `Your project has been denied access (403 Permission Denied). Please generate a fresh API key in Google AI Studio (https://aistudio.google.com/apikey) under a new project or complete account verification.`;
+            status = 403;
+          } else if (code === 404 || statusStr === "NOT_FOUND") {
+            errorMsg = `Model '${GEMINI_MODEL}' was not found (404). Please verify GEMINI_MODEL in your environment.`;
+            status = 404;
+          } else if (code === 429 || statusStr === "RESOURCE_EXHAUSTED") {
+            errorMsg = `Rate limit or quota exceeded (429). Please wait a moment before trying again.`;
+            status = 429;
+          } else {
+            errorMsg = `${msg} (${code || statusStr})`;
+          }
+        }
+      } catch {
+        // Not a JSON formatted error string
+      }
+
+      return NextResponse.json(
+        {
+          error: `Gemini API Error [${GEMINI_MODEL}]: ${errorMsg}`,
+          model: GEMINI_MODEL,
+        },
+        { status }
+      );
     }
 
     if (!rawText) {
-      const errMsg =
-        lastError instanceof Error ? lastError.message : "Unknown Gemini API error";
       return NextResponse.json(
         {
-          error: `Could not generate reply from Gemini: ${errMsg}. Please verify your API key and quota.`,
+          error: `Gemini API [${GEMINI_MODEL}] returned an empty response. Please try again.`,
+          model: GEMINI_MODEL,
         },
         { status: 502 }
       );
@@ -163,6 +194,7 @@ JSON Reply:`;
       kannada: parsed.kannada,
       romanization: parsed.romanization || "",
       english: parsed.english || "",
+      model: GEMINI_MODEL,
     });
   } catch (error) {
     const message =
