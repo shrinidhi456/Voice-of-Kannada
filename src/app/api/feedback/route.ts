@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
+import { calculatePronunciationScore } from "@/lib/pronunciation";
 
 export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
 export const GEMINI_MODEL = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
@@ -27,10 +28,12 @@ export async function POST(req: NextRequest) {
       targetPhrase,
       romanization,
       spokenTranscript,
+      score: incomingScore,
     }: {
       targetPhrase?: string;
       romanization?: string;
       spokenTranscript?: string;
+      score?: number;
     } = await req.json();
 
     if (!targetPhrase || !spokenTranscript) {
@@ -51,25 +54,31 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Determine accuracy score (use provided score or calculate via Levenshtein)
+    const score =
+      typeof incomingScore === "number"
+        ? incomingScore
+        : calculatePronunciationScore(targetPhrase, spokenTranscript).score;
+
     const promptText = `
-You are an encouraging, expert Kannada language and pronunciation tutor helping non-Kannada speakers improve their spoken Kannada.
+You are an expert Kannada pronunciation tutor. Analyze the learner's spoken attempt against the target Kannada phrase.
 
 Target Phrase: "${targetPhrase}"
-Romanization: "${romanization || ""}"
-Learner's Spoken Transcript: "${spokenTranscript}"
+Target Romanization: "${romanization || ""}"
+Learner Spoke: "${spokenTranscript}"
+Calculated Match Score: ${score}/100
 
-Analyze the pronunciation difference. Specifically look out for common Kannada learner mistakes:
-1. Retroflex vs dental consonants (e.g. 'ಳ' vs 'ಲ', 'ಣ' vs 'ನ', 'ಟ/ಡ' vs 'ತ/ದ').
-2. Aspirated vs unaspirated sounds (e.g. 'ಕ' vs 'ಖ', 'ಪ' vs 'ಫ', 'ದ' vs 'ಧ').
-3. Short vs long vowels (e.g. 'ಅ' vs 'ಆ', 'ಇ' vs 'ಈ', 'ಒ' vs 'ಓ', 'ಎ' vs 'ಏ').
-4. Word endings and vowel elongation.
+STRICT RULES FOR YOUR TIP:
+1. Length: Exactly 1 to 2 short sentences.
+2. If the score is 90 or above (or practically perfect): Reply with a brief praise only (e.g. "Excellent pronunciation! That was clear and natural.").
+3. Focus ONLY on the specific words that were mismatched or missing.
+4. Different word vs Sound mistake:
+   - If the learner spoke a completely different word (e.g., said 'ಚಹಾ' instead of 'ಕಾಫಿ', or 'ದೋಸೆ' instead of 'ಇಡ್ಲಿ'): DO NOT give tongue or mouth advice. Simply state which word was said instead of which, and give its English meaning (e.g., "You said '...' (meaning ...) instead of '...'.").
+   - Only give mouth, tongue, or sound advice (retroflex ಳ/ಲ, aspirated ಕ/ಖ, short/long vowels) if the mismatched word is a close/near-match with a genuine phonetic sound difference. Do NOT give generic mouth advice.
 
-Instruction:
-Provide ONE concise, practical, and friendly English tip (1 to 2 sentences) explaining the likely sound difference and how to position their tongue/mouth to say it accurately.
-
-You MUST reply ONLY with a single JSON object in this exact format:
+Reply ONLY in this JSON format:
 {
-  "tip": "<One short, friendly English tip about the specific sound mistake and how to fix it>"
+  "tip": "<Your 1-2 sentence tip adhering strictly to the above rules>"
 }
 `;
 
@@ -128,10 +137,9 @@ You MUST reply ONLY with a single JSON object in this exact format:
     }
 
     return NextResponse.json({
-      tip:
-        parsed.tip ||
-        "Good effort! Pay attention to the vowel length and roll your tongue slightly for retroflex sounds.",
+      tip: parsed.tip || (score >= 90 ? "Great job! Accurate and natural pronunciation." : "Keep practicing!"),
       model: GEMINI_MODEL,
+      score,
     });
   } catch (error) {
     const message =

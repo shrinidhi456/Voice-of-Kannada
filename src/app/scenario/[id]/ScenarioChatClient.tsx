@@ -505,6 +505,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
           targetPhrase: phrase.kannada,
           romanization: phrase.romanization,
           spokenTranscript: spokenText,
+          score: result.score,
         }),
       });
 
