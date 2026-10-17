@@ -4,6 +4,14 @@ export interface ScenarioMessage {
   english: string;
 }
 
+export interface PracticePhrase {
+  id: string;
+  kannada: string;
+  romanization: string;
+  english: string;
+  tipContext?: string;
+}
+
 export interface Scenario {
   id: string;
   title: string;
@@ -20,6 +28,7 @@ export interface Scenario {
   bgGradient: string;
   accentColor: string;
   badgeColor: string;
+  practicePhrases: PracticePhrase[];
 }
 
 export const SCENARIOS: Record<string, Scenario> = {
@@ -47,6 +56,44 @@ Keep the conversation going by asking for their destination, discussing the mete
     bgGradient: "from-amber-500/10 via-yellow-500/5 to-transparent",
     accentColor: "border-amber-500/30 hover:border-amber-500/70",
     badgeColor: "bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300",
+    practicePhrases: [
+      {
+        id: "auto-1",
+        kannada: "ಮೀಟರ್ ಹಾಕಿ ಸಾರ್",
+        romanization: "Meter haaki saar",
+        english: "Please put on the meter, sir",
+      },
+      {
+        id: "auto-2",
+        kannada: "ಮಡಿವಾಳಕ್ಕೆ ಎಷ್ಟು ಆಗುತ್ತೆ?",
+        romanization: "Madiwalakke eshtu aagutthe?",
+        english: "How much will it be to Madiwala?",
+      },
+      {
+        id: "auto-3",
+        kannada: "ಇಲ್ಲಿ ಸ್ವಲ್ಪ ಮುಂದೆ ನಿಲ್ಲಿಸಿ",
+        romanization: "Illi swalp munde nillisi",
+        english: "Please stop a little ahead here",
+      },
+      {
+        id: "auto-4",
+        kannada: "ಮುಂದೆ ಬಲಗಡೆ ತಗೊಳ್ಳಿ",
+        romanization: "Munde bala gade thagolli",
+        english: "Take a right turn ahead",
+      },
+      {
+        id: "auto-5",
+        kannada: "ಚಿಲ್ಲರೆ ಇದೆಯಾ ಸಾರ್?",
+        romanization: "Chillare ideya saar?",
+        english: "Do you have change, sir?",
+      },
+      {
+        id: "auto-6",
+        kannada: "ಮೆಟ್ರೋ ಸ್ಟೇಷನ್ ಹತ್ತಿರ ಹೋಗಿ",
+        romanization: "Metro station hathira hogi",
+        english: "Please go near the metro station",
+      },
+    ],
   },
   restaurant: {
     id: "restaurant",
@@ -72,6 +119,44 @@ Respond naturally to their food orders, suggest hot filter coffee or sweets, or 
     bgGradient: "from-rose-500/10 via-orange-500/5 to-transparent",
     accentColor: "border-rose-500/30 hover:border-rose-500/70",
     badgeColor: "bg-rose-100 text-rose-800 dark:bg-rose-950/80 dark:text-rose-300",
+    practicePhrases: [
+      {
+        id: "rest-1",
+        kannada: "ಒಂದು ಮಸಾಲೆ ದೋಸೆ ಕೊಡಿ",
+        romanization: "Ondu masale dose kodi",
+        english: "Please give one masala dosa",
+      },
+      {
+        id: "rest-2",
+        kannada: "ನೀರು ಬೇಕು",
+        romanization: "Neeru beku",
+        english: "I need water",
+      },
+      {
+        id: "rest-3",
+        kannada: "ಬಿಲ್ ಕೊಡಿ",
+        romanization: "Bill kodi",
+        english: "Please give the bill",
+      },
+      {
+        id: "rest-4",
+        kannada: "ಒಂದು ಸ್ಟ್ರಾಂಗ್ ಫಿಲ್ಟರ್ ಕಾಫಿ",
+        romanization: "Ondu strong filter coffee",
+        english: "One strong filter coffee",
+      },
+      {
+        id: "rest-5",
+        kannada: "ಚಟ್ನಿ ಸ್ವಲ್ಪ ಜಾಸ್ತಿ ಕೊಡಿ",
+        romanization: "Chutney swalp jaasthi kodi",
+        english: "Please give a little extra chutney",
+      },
+      {
+        id: "rest-6",
+        kannada: "ಖಾರ ಸ್ವಲ್ಪ ಕಮ್ಮಿ ಮಾಡಿ",
+        romanization: "Khaara swalp kammi maadi",
+        english: "Please make it less spicy",
+      },
+    ],
   },
   market: {
     id: "market",
@@ -97,6 +182,44 @@ Respond naturally to prices, quantity inquiries, friendly bargaining, and weighi
     bgGradient: "from-emerald-500/10 via-teal-500/5 to-transparent",
     accentColor: "border-emerald-500/30 hover:border-emerald-500/70",
     badgeColor: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300",
+    practicePhrases: [
+      {
+        id: "mkt-1",
+        kannada: "ಟೊಮೆಟೊ ಕಿಲೋಗೆ ಎಷ್ಟು?",
+        romanization: "Tomato kiloge eshtu?",
+        english: "How much per kilo of tomatoes?",
+      },
+      {
+        id: "mkt-2",
+        kannada: "ಸ್ವಲ್ಪ ಕಮ್ಮಿ ಮಾಡಿ ಕೊಡಿ",
+        romanization: "Swalp kammi maadi kodi",
+        english: "Please reduce the price a little",
+      },
+      {
+        id: "mkt-3",
+        kannada: "ತಾಜಾ ಹಣ್ಣುಗಳು ಇದೆಯಾ?",
+        romanization: "Thaaja hannugalu ideya?",
+        english: "Are these fruits fresh?",
+      },
+      {
+        id: "mkt-4",
+        kannada: "ಅರ್ಧ ಕಿಲೋ ಕೊಡಿ",
+        romanization: "Ardha kilo kodi",
+        english: "Please give half a kilo",
+      },
+      {
+        id: "mkt-5",
+        kannada: "ಒಟ್ಟು ಎಷ್ಟು ಆಯ್ತು?",
+        romanization: "Ottu eshtu aaythu?",
+        english: "How much is the total?",
+      },
+      {
+        id: "mkt-6",
+        kannada: "ಒಂದು ಬ್ಯಾಗ್ ಕೊಡಿ",
+        romanization: "Ondu bag kodi",
+        english: "Please give me a carry bag",
+      },
+    ],
   },
 };
 
