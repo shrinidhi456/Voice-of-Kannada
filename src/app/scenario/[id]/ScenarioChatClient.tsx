@@ -125,6 +125,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
   const [lastFailedChat, setLastFailedChat] = useState<{
     text: string;
     history: ChatMessage[];
+    isBusy: boolean;
   } | null>(null);
 
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
@@ -303,7 +304,15 @@ export default function ScenarioChatClient({ id }: { id: string }) {
           return;
         }
 
-        throw new Error(data?.error || `TTS server responded with status ${res.status}`);
+        const is401 = res.status === 401 || data?.error?.includes("401");
+        setSpeakingMsgId(null);
+        setErrorBanner({
+          message: is401
+            ? "Gemini API key is invalid or unauthenticated (401). Please verify your GEMINI_API_KEY in .env.local."
+            : data?.error || `TTS server responded with status ${res.status}`,
+          isBusy: false,
+        });
+        return;
       }
 
       const audioBlob = await res.blob();
@@ -336,14 +345,20 @@ export default function ScenarioChatClient({ id }: { id: string }) {
           err.message.toLowerCase().includes("high demand") ||
           err.message.toLowerCase().includes("unavailable"));
 
+      const is401 =
+        err instanceof Error &&
+        (err.message.includes("401") || err.message.includes("API key not valid"));
+
       setErrorBanner({
         message: isBusy
           ? "The AI is busy, please try again in a few seconds"
+          : is401
+          ? "Gemini API key is invalid or unauthenticated (401). Please verify your GEMINI_API_KEY in .env.local."
           : err instanceof Error
           ? err.message
           : "Failed to play audio.",
         isBusy,
-        onRetry: () => speakKannada(kannadaText, msgId),
+        onRetry: isBusy ? () => speakKannada(kannadaText, msgId) : undefined,
       });
     }
   };
@@ -468,7 +483,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
           data?.error?.toLowerCase().includes("unavailable");
 
         if (isBusy) {
-          setLastFailedChat({ text: textToSend, history: currentHistory });
+          setLastFailedChat({ text: textToSend, history: currentHistory, isBusy: true });
           setErrorBanner({
             message: "The AI is busy, please try again in a few seconds",
             isBusy: true,
@@ -477,7 +492,15 @@ export default function ScenarioChatClient({ id }: { id: string }) {
           return;
         }
 
-        throw new Error(data?.error || `Server responded with status ${res.status}`);
+        const is401 = res.status === 401 || data?.error?.includes("401");
+        setLastFailedChat(null);
+        setErrorBanner({
+          message: is401
+            ? "Gemini API key is invalid or unauthenticated (401). Please verify your GEMINI_API_KEY in .env.local."
+            : data?.error || `Server responded with status ${res.status}`,
+          isBusy: false,
+        });
+        return;
       }
 
       setLastFailedChat(null);
@@ -506,16 +529,28 @@ export default function ScenarioChatClient({ id }: { id: string }) {
           err.message.toLowerCase().includes("high demand") ||
           err.message.toLowerCase().includes("unavailable"));
 
-      setLastFailedChat({ text: textToSend, history: currentHistory });
-      setErrorBanner({
-        message: isBusy
-          ? "The AI is busy, please try again in a few seconds"
-          : err instanceof Error
-          ? err.message
-          : "Something went wrong while connecting to the AI.",
-        isBusy,
-        onRetry: () => executeChatRequest(textToSend, currentHistory),
-      });
+      const is401 =
+        err instanceof Error &&
+        (err.message.includes("401") || err.message.includes("API key not valid"));
+
+      if (isBusy) {
+        setLastFailedChat({ text: textToSend, history: currentHistory, isBusy: true });
+        setErrorBanner({
+          message: "The AI is busy, please try again in a few seconds",
+          isBusy: true,
+          onRetry: () => executeChatRequest(textToSend, currentHistory),
+        });
+      } else {
+        setLastFailedChat(null);
+        setErrorBanner({
+          message: is401
+            ? "Gemini API key is invalid or unauthenticated (401). Please verify your GEMINI_API_KEY in .env.local."
+            : err instanceof Error
+            ? err.message
+            : "Something went wrong while connecting to the AI.",
+          isBusy: false,
+        });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -702,7 +737,25 @@ export default function ScenarioChatClient({ id }: { id: string }) {
           return;
         }
 
-        throw new Error(data?.error || `Could not generate pronunciation tip (${res.status})`);
+        const is401 = res.status === 401 || data?.error?.includes("401");
+        const errMsg = is401
+          ? "Gemini API key is invalid or unauthenticated (401). Please verify your GEMINI_API_KEY in .env.local."
+          : data?.error || `Could not generate pronunciation tip (${res.status})`;
+
+        setPracticeCardStates((prev) => ({
+          ...prev,
+          [phrase.id]: {
+            ...prev[phrase.id],
+            tip: null,
+            isTipLoading: false,
+            tipError: errMsg,
+          },
+        }));
+        setErrorBanner({
+          message: errMsg,
+          isBusy: false,
+        });
+        return;
       }
 
       setPracticeCardStates((prev) => ({
@@ -723,8 +776,14 @@ export default function ScenarioChatClient({ id }: { id: string }) {
           err.message.toLowerCase().includes("high demand") ||
           err.message.toLowerCase().includes("unavailable"));
 
+      const is401 =
+        err instanceof Error &&
+        (err.message.includes("401") || err.message.includes("API key not valid"));
+
       const friendlyMsg = isBusy
         ? "The AI is busy, please try again in a few seconds"
+        : is401
+        ? "Gemini API key is invalid or unauthenticated (401). Please verify your GEMINI_API_KEY in .env.local."
         : err instanceof Error
         ? err.message
         : "Failed to load tip.";
@@ -742,7 +801,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
       setErrorBanner({
         message: friendlyMsg,
         isBusy,
-        onRetry: () => evaluatePronunciation(phrase, spokenText),
+        onRetry: isBusy ? () => evaluatePronunciation(phrase, spokenText) : undefined,
       });
     }
   };
@@ -1028,8 +1087,8 @@ export default function ScenarioChatClient({ id }: { id: string }) {
               );
             })}
 
-            {/* Inline Friendly Retry Banner inside Chat Stream if AI failed to respond */}
-            {lastFailedChat && !isLoading && (
+            {/* Inline Friendly Retry Banner inside Chat Stream if AI failed to respond due to high demand */}
+            {lastFailedChat && lastFailedChat.isBusy && !isLoading && (
               <div className="flex items-start gap-3 max-w-[95%] sm:max-w-[85%]">
                 <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-amber-100 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-800 shrink-0 mt-0.5">
                   ⏳
