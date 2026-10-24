@@ -1,11 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { checkRateLimit, validateRequestBody } from "@/lib/rateLimit";
+import {
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_GEMINI_FALLBACK_MODEL,
+  GEMINI_MODEL,
+  GEMINI_FALLBACK_MODEL,
+  executeWithRetryAndFallback,
+  isRetryableGeminiError,
+  extractGeminiErrorMessage,
+} from "@/lib/gemini";
 
-// 1. Current stable Gemini Flash model from official docs:
-// https://ai.google.dev/gemini-api/docs/models/gemini
-export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
-export const GEMINI_MODEL = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
+// Re-export constants for external consumers & testing
+export {
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_GEMINI_FALLBACK_MODEL,
+  GEMINI_MODEL,
+  GEMINI_FALLBACK_MODEL,
+};
 
 interface ChatMessage {
   sender: "user" | "ai";
@@ -119,64 +131,66 @@ JSON Reply:`;
     const ai = new GoogleGenAI({ apiKey });
 
     let rawText = "";
+    let modelUsed = GEMINI_MODEL;
+
     try {
-      const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: promptText,
-        config: {
-          responseMimeType: "application/json",
+      const result = await executeWithRetryAndFallback({
+        primaryModel: GEMINI_MODEL,
+        fallbackModel: GEMINI_FALLBACK_MODEL,
+        operation: async (model) => {
+          const response = await ai.models.generateContent({
+            model,
+            contents: promptText,
+            config: {
+              responseMimeType: "application/json",
+            },
+          });
+
+          if (!response || !response.text) {
+            throw new Error(`Model [${model}] returned an empty response.`);
+          }
+
+          return response.text;
         },
       });
 
-      if (response && response.text) {
-        rawText = response.text;
-      }
+      rawText = result.data;
+      modelUsed = result.modelUsed;
     } catch (err: unknown) {
-      console.error(`Gemini API error with model [${GEMINI_MODEL}]:`, err);
-      let errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`Gemini Chat error:`, err);
+      const isBusy = (err as Record<string, unknown>)?.isBusy || isRetryableGeminiError(err);
+
+      if (isBusy) {
+        return NextResponse.json(
+          {
+            error: "The AI is busy, please try again in a few seconds",
+            isBusy: true,
+            canRetry: true,
+          },
+          { status: 503 }
+        );
+      }
+
+      let errorMsg = extractGeminiErrorMessage(err);
       let status = 502;
+      const anyErr = err as Record<string, unknown>;
+      const code = anyErr?.status || anyErr?.statusCode;
 
-      // Extract JSON error payload if returned by Google API
-      try {
-        const parsed = JSON.parse(errorMsg);
-        if (parsed?.error) {
-          const code = parsed.error.code;
-          const msg = parsed.error.message || "";
-          const statusStr = parsed.error.status || "";
-
-          if (code === 403 || statusStr === "PERMISSION_DENIED") {
-            errorMsg = `Your project has been denied access (403 Permission Denied). Please generate a fresh API key in Google AI Studio (https://aistudio.google.com/apikey) under a new project or complete account verification.`;
-            status = 403;
-          } else if (code === 404 || statusStr === "NOT_FOUND") {
-            errorMsg = `Model '${GEMINI_MODEL}' was not found (404). Please verify GEMINI_MODEL in your environment.`;
-            status = 404;
-          } else if (code === 429 || statusStr === "RESOURCE_EXHAUSTED") {
-            errorMsg = `Rate limit or quota exceeded (429). Please wait a moment before trying again.`;
-            status = 429;
-          } else {
-            errorMsg = `${msg} (${code || statusStr})`;
-          }
-        }
-      } catch {
-        // Not a JSON formatted error string
+      if (code === 401 || errorMsg.includes("401") || errorMsg.includes("API key not valid")) {
+        status = 401;
+        errorMsg = "API key not valid or unauthenticated (401). Please verify your GEMINI_API_KEY in .env.local.";
+      } else if (code === 403 || errorMsg.includes("403") || errorMsg.includes("PERMISSION_DENIED")) {
+        status = 403;
+        errorMsg = "Your project has been denied access (403 Permission Denied). Please check your API key.";
       }
 
       return NextResponse.json(
         {
-          error: `Gemini API Error [${GEMINI_MODEL}]: ${errorMsg}`,
-          model: GEMINI_MODEL,
+          error: `Gemini API Error: ${errorMsg}`,
+          model: modelUsed,
+          canRetry: false,
         },
         { status }
-      );
-    }
-
-    if (!rawText) {
-      return NextResponse.json(
-        {
-          error: `Gemini API [${GEMINI_MODEL}] returned an empty response. Please try again.`,
-          model: GEMINI_MODEL,
-        },
-        { status: 502 }
       );
     }
 
@@ -206,7 +220,7 @@ JSON Reply:`;
       kannada: parsed.kannada,
       romanization: parsed.romanization || "",
       english: parsed.english || "",
-      model: GEMINI_MODEL,
+      model: modelUsed,
     });
   } catch (error) {
     const message =

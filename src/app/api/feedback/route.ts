@@ -2,9 +2,23 @@ import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { calculatePronunciationScore } from "@/lib/pronunciation";
 import { checkRateLimit, validateRequestBody } from "@/lib/rateLimit";
+import {
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_GEMINI_FALLBACK_MODEL,
+  GEMINI_MODEL,
+  GEMINI_FALLBACK_MODEL,
+  executeWithRetryAndFallback,
+  isRetryableGeminiError,
+  extractGeminiErrorMessage,
+} from "@/lib/gemini";
 
-export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
-export const GEMINI_MODEL = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
+// Re-export constants for external consumers & testing
+export {
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_GEMINI_FALLBACK_MODEL,
+  GEMINI_MODEL,
+  GEMINI_FALLBACK_MODEL,
+};
 
 function extractJson(raw: string) {
   let clean = raw.trim();
@@ -98,39 +112,61 @@ Reply ONLY in this JSON format:
     const ai = new GoogleGenAI({ apiKey });
 
     let rawText = "";
+    let modelUsed = GEMINI_MODEL;
+
     try {
-      const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: promptText,
-        config: {
-          responseMimeType: "application/json",
+      const result = await executeWithRetryAndFallback({
+        primaryModel: GEMINI_MODEL,
+        fallbackModel: GEMINI_FALLBACK_MODEL,
+        operation: async (model) => {
+          const response = await ai.models.generateContent({
+            model,
+            contents: promptText,
+            config: {
+              responseMimeType: "application/json",
+            },
+          });
+
+          if (!response || !response.text) {
+            throw new Error(`Model [${model}] returned an empty feedback response.`);
+          }
+
+          return response.text;
         },
       });
 
-      if (response && response.text) {
-        rawText = response.text;
-      }
+      rawText = result.data;
+      modelUsed = result.modelUsed;
     } catch (err: unknown) {
-      console.error(`Gemini feedback error with model [${GEMINI_MODEL}]:`, err);
-      let errorMsg = err instanceof Error ? err.message : String(err);
-      let status = 502;
+      console.error(`Gemini feedback error:`, err);
+      const isBusy = (err as Record<string, unknown>)?.isBusy || isRetryableGeminiError(err);
 
-      try {
-        const parsed = JSON.parse(errorMsg);
-        if (parsed?.error) {
-          const code = parsed.error.code;
-          const msg = parsed.error.message || "";
-          const statusStr = parsed.error.status || "";
-          errorMsg = `${msg} (${code || statusStr})`;
-        }
-      } catch {
-        // ignore
+      if (isBusy) {
+        return NextResponse.json(
+          {
+            error: "The AI is busy, please try again in a few seconds",
+            isBusy: true,
+            canRetry: true,
+          },
+          { status: 503 }
+        );
+      }
+
+      let errorMsg = extractGeminiErrorMessage(err);
+      let status = 502;
+      const anyErr = err as Record<string, unknown>;
+      const code = anyErr?.status || anyErr?.statusCode;
+
+      if (code === 401 || errorMsg.includes("401") || errorMsg.includes("API key not valid")) {
+        status = 401;
+        errorMsg = "API key not valid or unauthenticated (401). Please verify your GEMINI_API_KEY in .env.local.";
       }
 
       return NextResponse.json(
         {
-          error: `Gemini Feedback Error [${GEMINI_MODEL}]: ${errorMsg}`,
-          model: GEMINI_MODEL,
+          error: `Gemini Feedback Error: ${errorMsg}`,
+          model: modelUsed,
+          canRetry: false,
         },
         { status }
       );
@@ -151,7 +187,7 @@ Reply ONLY in this JSON format:
 
     return NextResponse.json({
       tip: parsed.tip || (score >= 90 ? "Great job! Accurate and natural pronunciation." : "Keep practicing!"),
-      model: GEMINI_MODEL,
+      model: modelUsed,
       score,
     });
   } catch (error) {

@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { SCENARIOS, Scenario, PracticePhrase } from "@/data/scenarios";
 import {
   calculatePronunciationScore,
   PronunciationScoreResult,
+  WordDiffResult,
 } from "@/lib/pronunciation";
 
 interface ChatMessage {
@@ -18,6 +19,14 @@ interface ChatMessage {
   timestamp: string;
 }
 
+interface PracticeCardState {
+  transcript: string;
+  scoreResult: PronunciationScoreResult | null;
+  tip: string | null;
+  isTipLoading: boolean;
+  tipError: string | null;
+}
+
 interface PhraseProgress {
   phraseId: string;
   scenarioId: string;
@@ -27,22 +36,32 @@ interface PhraseProgress {
   lastPracticedAt: string;
 }
 
-interface PracticeCardState {
-  transcript: string;
-  scoreResult: PronunciationScoreResult | null;
-  tip: string | null;
-  isTipLoading: boolean;
-  tipError: string | null;
+interface ErrorBannerState {
+  message: string;
+  isBusy: boolean;
+  onRetry?: () => void;
 }
 
-const STORAGE_KEY = "vok_pronunciation_progress";
+const STORAGE_KEY = "vok_practice_progress_v1";
+
+const BENGALURU_CHEAT_SHEET = [
+  { kannada: "ಮೀಟರ್ ಹಾಕಿ saar", romanization: "Meter haaki saar", english: "Please put on the meter, sir" },
+  { kannada: "ಇಲ್ಲಿ ನಿಲ್ಲಿಸಿ saar", romanization: "Illi nillisi saar", english: "Please stop here, sir" },
+  { kannada: "ಎಷ್ಟು ಆಯ್ತು?", romanization: "Eshtu aaythu?", english: "How much is the total?" },
+  { kannada: "ಒಂದು ಕಾಫಿ ಕೊಡಿ", romanization: "Ondu coffee kodi", english: "Please give one coffee" },
+  { kannada: "ಸ್ವಲ್ಪ ಕಮ್ಮಿ ಮಾಡಿ", romanization: "Swalpa kammi maadi", english: "Please reduce the price slightly" },
+  { kannada: "ಕನ್ನಡ ಸ್ವಲ್ಪ ಬರುತ್ತೆ", romanization: "Kannada swalpa baruththe", english: "I understand a little Kannada" },
+  { kannada: "ಧನ್ಯವಾದಗಳು", romanization: "Dhanyavaadagalu", english: "Thank you very much" },
+  { kannada: "ಬೇಡ / ಬೇಕು", romanization: "Beda / Beku", english: "Don't want / Want" },
+];
 
 function loadStoredProgress(): Record<string, PhraseProgress> {
   if (typeof window === "undefined") return {};
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     return raw ? JSON.parse(raw) : {};
-  } catch {
+  } catch (err) {
+    console.warn("Could not load progress from localStorage", err);
     return {};
   }
 }
@@ -98,10 +117,28 @@ export default function ScenarioChatClient({ id }: { id: string }) {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Friendly error banner state with retry support
+  const [errorBanner, setErrorBanner] = useState<ErrorBannerState | null>(null);
+
+  // Tracks failed chat message to display inline retry
+  const [lastFailedChat, setLastFailedChat] = useState<{
+    text: string;
+    history: ChatMessage[];
+  } | null>(null);
+
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
   const [hasKannadaVoice, setHasKannadaVoice] = useState<boolean | null>(null);
   const [speechSupported, setSpeechSupported] = useState(true);
+
+  // Unique Feature 1: Audio Playback Speed toggle (1.0x vs 0.75x Slow)
+  const [audioSpeed, setAudioSpeed] = useState<1.0 | 0.75>(1.0);
+
+  // Unique Feature 2: Bengaluru Survival Cheat Sheet Modal
+  const [showCheatSheet, setShowCheatSheet] = useState(false);
+
+  // Unique Feature 3: Copy indicator toast
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Pronunciation Practice States
   const [activePracticePhraseId, setActivePracticePhraseId] = useState<string | null>(null);
@@ -111,6 +148,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
   const [progressMap, setProgressMap] = useState<Record<string, PhraseProgress>>({});
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chatRecognitionRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -127,7 +165,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
     if (activeTab === "chat") {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages, isLoading, transcript, activeTab]);
+  }, [messages, isLoading, transcript, activeTab, lastFailedChat]);
 
   // Check Kannada voice availability in browser speechSynthesis
   useEffect(() => {
@@ -166,50 +204,74 @@ export default function ScenarioChatClient({ id }: { id: string }) {
     }
   }, []);
 
-  // Play Kannada audio using browser speechSynthesis if voice is present, or /api/tts server fallback
-  const speakKannada = async (kannadaText: string, msgId: string) => {
-    if (typeof window === "undefined") return;
-
-    // Stop any existing synthesis or server audio
-    if ("speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
+  const copyToClipboard = (text: string, id: string) => {
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 1800);
     }
+  };
+
+  const insertCheatPhrase = (phraseText: string) => {
+    setInputText(phraseText);
+    setShowCheatSheet(false);
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+  };
+
+  // --- Audio Playback with Local & Server Resilience ---
+  const speakKannada = async (kannadaText: string, msgId: string) => {
+    if (!kannadaText) return;
+
     if (activeAudioRef.current) {
       activeAudioRef.current.pause();
       activeAudioRef.current = null;
     }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
 
     setSpeakingMsgId(msgId);
 
-    // 1. If local device has a Kannada voice, use browser speechSynthesis
-    if (hasKannadaVoice && "speechSynthesis" in window) {
-      try {
-        const voices = window.speechSynthesis.getVoices();
-        const kannadaVoice = voices.find(
-          (v) =>
-            v.lang.toLowerCase() === "kn-in" ||
-            v.lang.toLowerCase().startsWith("kn") ||
-            v.name.toLowerCase().includes("kannada")
-        );
+    // 1. Try local browser SpeechSynthesis first if Kannada voice exists
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      const voices = window.speechSynthesis.getVoices();
+      const hasKn = voices.some(
+        (v) =>
+          v.lang.toLowerCase() === "kn-in" ||
+          v.lang.toLowerCase().startsWith("kn") ||
+          v.name.toLowerCase().includes("kannada")
+      );
 
-        const utterance = new SpeechSynthesisUtterance(kannadaText);
-        utterance.lang = "kn-IN";
-        utterance.rate = 0.9;
-        if (kannadaVoice) {
-          utterance.voice = kannadaVoice;
+      if (hasKn) {
+        try {
+          const kannadaVoice = voices.find(
+            (v) =>
+              v.lang.toLowerCase() === "kn-in" ||
+              v.lang.toLowerCase().startsWith("kn") ||
+              v.name.toLowerCase().includes("kannada")
+          );
+
+          const utterance = new SpeechSynthesisUtterance(kannadaText);
+          utterance.lang = "kn-IN";
+          utterance.rate = audioSpeed === 0.75 ? 0.75 : 0.9;
+          if (kannadaVoice) {
+            utterance.voice = kannadaVoice;
+          }
+
+          utterance.onend = () => {
+            setSpeakingMsgId(null);
+          };
+          utterance.onerror = () => {
+            setSpeakingMsgId(null);
+          };
+
+          window.speechSynthesis.speak(utterance);
+          return;
+        } catch (err) {
+          console.warn("Browser speechSynthesis error, falling back to server TTS:", err);
         }
-
-        utterance.onend = () => {
-          setSpeakingMsgId(null);
-        };
-        utterance.onerror = () => {
-          setSpeakingMsgId(null);
-        };
-
-        window.speechSynthesis.speak(utterance);
-        return;
-      } catch (err) {
-        console.warn("Browser speechSynthesis error, falling back to server TTS:", err);
       }
     }
 
@@ -223,12 +285,31 @@ export default function ScenarioChatClient({ id }: { id: string }) {
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);
+        const isBusy =
+          res.status === 503 ||
+          res.status === 429 ||
+          data?.isBusy ||
+          data?.error?.includes("busy") ||
+          data?.error?.toLowerCase().includes("high demand") ||
+          data?.error?.toLowerCase().includes("unavailable");
+
+        if (isBusy) {
+          setSpeakingMsgId(null);
+          setErrorBanner({
+            message: "The AI is busy, please try again in a few seconds",
+            isBusy: true,
+            onRetry: () => speakKannada(kannadaText, msgId),
+          });
+          return;
+        }
+
         throw new Error(data?.error || `TTS server responded with status ${res.status}`);
       }
 
       const audioBlob = await res.blob();
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
+      audio.playbackRate = audioSpeed;
       activeAudioRef.current = audio;
 
       audio.onended = () => {
@@ -247,8 +328,23 @@ export default function ScenarioChatClient({ id }: { id: string }) {
       await audio.play();
     } catch (err: unknown) {
       setSpeakingMsgId(null);
-      const msg = err instanceof Error ? err.message : "Failed to play audio.";
-      setErrorMessage(`Audio Notice: ${msg}`);
+      const isBusy =
+        err instanceof Error &&
+        (err.message.includes("503") ||
+          err.message.includes("429") ||
+          err.message.toLowerCase().includes("busy") ||
+          err.message.toLowerCase().includes("high demand") ||
+          err.message.toLowerCase().includes("unavailable"));
+
+      setErrorBanner({
+        message: isBusy
+          ? "The AI is busy, please try again in a few seconds"
+          : err instanceof Error
+          ? err.message
+          : "Failed to play audio.",
+        isBusy,
+        onRetry: () => speakKannada(kannadaText, msgId),
+      });
     }
   };
 
@@ -259,9 +355,10 @@ export default function ScenarioChatClient({ id }: { id: string }) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRec) {
-      setErrorMessage(
-        "Web Speech Recognition is not supported in this browser. Please use Chrome/Edge or type your response in the box below."
-      );
+      setErrorBanner({
+        message: "Web Speech Recognition is not supported in this browser. Please use Chrome/Edge or type your response in the box below.",
+        isBusy: false,
+      });
       return;
     }
 
@@ -274,7 +371,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
 
       recognition.onstart = () => {
         setIsListening(true);
-        setErrorMessage(null);
+        setErrorBanner(null);
         setTranscript("");
       };
 
@@ -293,11 +390,20 @@ export default function ScenarioChatClient({ id }: { id: string }) {
         console.warn("Speech recognition error:", event.error);
         setIsListening(false);
         if (event.error === "not-allowed") {
-          setErrorMessage("Microphone access was denied. Please allow microphone permissions or type your message.");
+          setErrorBanner({
+            message: "Microphone access was denied. Please allow microphone permissions or type your message.",
+            isBusy: false,
+          });
         } else if (event.error === "no-speech") {
-          setErrorMessage("No speech was detected. Please try again or type your message.");
+          setErrorBanner({
+            message: "No speech was detected. Please try again or type your message.",
+            isBusy: false,
+          });
         } else {
-          setErrorMessage(`Mic issue (${event.error}). You can type your message below.`);
+          setErrorBanner({
+            message: `Mic issue (${event.error}). You can type your message below.`,
+            isBusy: false,
+          });
         }
       };
 
@@ -307,9 +413,12 @@ export default function ScenarioChatClient({ id }: { id: string }) {
 
       recognition.start();
     } catch (err) {
-      console.error("Speech recognition start failed:", err);
+      console.error("SpeechRecognition start failed:", err);
       setIsListening(false);
-      setErrorMessage("Could not start microphone. Please type your message.");
+      setErrorBanner({
+        message: "Could not activate microphone. Please try again or type in the input box.",
+        isBusy: false,
+      });
     }
   };
 
@@ -324,28 +433,10 @@ export default function ScenarioChatClient({ id }: { id: string }) {
     setIsListening(false);
   };
 
-  // Send message to Next.js /api/chat route
-  const handleSendMessage = async (textOverride?: string) => {
-    const textToSend = (textOverride !== undefined ? textOverride : inputText).trim();
-    if (!textToSend || isLoading) return;
-
-    if (isListening) {
-      stopChatListening();
-    }
-
-    const userMsg: ChatMessage = {
-      id: `user-${Date.now()}`,
-      sender: "user",
-      text: textToSend,
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-    };
-
-    const nextHistory = [...messages, userMsg];
-    setMessages(nextHistory);
-    setInputText("");
-    setTranscript("");
+  // --- Send Message & Resilient Chat Execution ---
+  const executeChatRequest = async (textToSend: string, currentHistory: ChatMessage[]) => {
     setIsLoading(true);
-    setErrorMessage(null);
+    setErrorBanner(null);
 
     try {
       const res = await fetch("/api/chat", {
@@ -354,7 +445,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
         body: JSON.stringify({
           role: scenario?.role,
           systemPrompt: scenario?.systemPrompt,
-          history: nextHistory.map((m) => ({
+          history: currentHistory.map((m) => ({
             sender: m.sender,
             kannada: m.kannada,
             romanization: m.romanization,
@@ -368,8 +459,28 @@ export default function ScenarioChatClient({ id }: { id: string }) {
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
+        const isBusy =
+          res.status === 503 ||
+          res.status === 429 ||
+          data?.isBusy ||
+          data?.error?.includes("busy") ||
+          data?.error?.toLowerCase().includes("high demand") ||
+          data?.error?.toLowerCase().includes("unavailable");
+
+        if (isBusy) {
+          setLastFailedChat({ text: textToSend, history: currentHistory });
+          setErrorBanner({
+            message: "The AI is busy, please try again in a few seconds",
+            isBusy: true,
+            onRetry: () => executeChatRequest(textToSend, currentHistory),
+          });
+          return;
+        }
+
         throw new Error(data?.error || `Server responded with status ${res.status}`);
       }
+
+      setLastFailedChat(null);
 
       const aiMsg: ChatMessage = {
         id: `ai-${Date.now()}`,
@@ -387,11 +498,52 @@ export default function ScenarioChatClient({ id }: { id: string }) {
         speakKannada(data.kannada, aiMsg.id);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Something went wrong while connecting to the AI.";
-      setErrorMessage(msg);
+      const isBusy =
+        err instanceof Error &&
+        (err.message.includes("503") ||
+          err.message.includes("429") ||
+          err.message.toLowerCase().includes("busy") ||
+          err.message.toLowerCase().includes("high demand") ||
+          err.message.toLowerCase().includes("unavailable"));
+
+      setLastFailedChat({ text: textToSend, history: currentHistory });
+      setErrorBanner({
+        message: isBusy
+          ? "The AI is busy, please try again in a few seconds"
+          : err instanceof Error
+          ? err.message
+          : "Something went wrong while connecting to the AI.",
+        isBusy,
+        onRetry: () => executeChatRequest(textToSend, currentHistory),
+      });
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleSendMessage = async (customText?: string) => {
+    const textToSend = (customText || inputText).trim();
+    if (!textToSend || isLoading) return;
+
+    if (isListening) {
+      stopChatListening();
+    }
+
+    const userMsg: ChatMessage = {
+      id: `user-${Date.now()}`,
+      sender: "user",
+      text: textToSend,
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    };
+
+    const nextHistory = [...messages, userMsg];
+    setMessages(nextHistory);
+    setInputText("");
+    setTranscript("");
+    setErrorBanner(null);
+    setLastFailedChat(null);
+
+    await executeChatRequest(textToSend, nextHistory);
   };
 
   // --- Pronunciation Feedback & Practice Flow ---
@@ -408,7 +560,10 @@ export default function ScenarioChatClient({ id }: { id: string }) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRec) {
-      setErrorMessage("Microphone speech recognition is not supported in this browser. Please use Chrome or Edge.");
+      setErrorBanner({
+        message: "Microphone speech recognition is not supported in this browser. Please use Chrome or Edge.",
+        isBusy: false,
+      });
       return;
     }
 
@@ -422,7 +577,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
       setActivePracticePhraseId(phrase.id);
       setIsPracticeListening(true);
       setPracticeTranscript("");
-      setErrorMessage(null);
+      setErrorBanner(null);
 
       let finalRecognized = "";
 
@@ -441,9 +596,15 @@ export default function ScenarioChatClient({ id }: { id: string }) {
         console.warn("Practice speech recognition error:", event.error);
         setIsPracticeListening(false);
         if (event.error === "not-allowed") {
-          setErrorMessage("Microphone access was denied. Please allow microphone permissions to practice speaking.");
+          setErrorBanner({
+            message: "Microphone access was denied. Please allow microphone permissions to practice speaking.",
+            isBusy: false,
+          });
         } else if (event.error === "no-speech") {
-          setErrorMessage("No speech detected. Please tap Practice and speak clearly into your mic.");
+          setErrorBanner({
+            message: "No speech detected. Please tap Practice and speak clearly into your mic.",
+            isBusy: false,
+          });
         }
       };
 
@@ -458,7 +619,10 @@ export default function ScenarioChatClient({ id }: { id: string }) {
     } catch (err) {
       console.error("Practice speech recognition start failed:", err);
       setIsPracticeListening(false);
-      setErrorMessage("Could not start microphone for practice.");
+      setErrorBanner({
+        message: "Could not start microphone for practice.",
+        isBusy: false,
+      });
     }
   };
 
@@ -511,6 +675,33 @@ export default function ScenarioChatClient({ id }: { id: string }) {
 
       const data = await res.json().catch(() => null);
       if (!res.ok) {
+        const isBusy =
+          res.status === 503 ||
+          res.status === 429 ||
+          data?.isBusy ||
+          data?.error?.includes("busy") ||
+          data?.error?.toLowerCase().includes("high demand") ||
+          data?.error?.toLowerCase().includes("unavailable");
+
+        if (isBusy) {
+          const friendly = "The AI is busy, please try again in a few seconds";
+          setPracticeCardStates((prev) => ({
+            ...prev,
+            [phrase.id]: {
+              ...prev[phrase.id],
+              tip: null,
+              isTipLoading: false,
+              tipError: friendly,
+            },
+          }));
+          setErrorBanner({
+            message: friendly,
+            isBusy: true,
+            onRetry: () => evaluatePronunciation(phrase, spokenText),
+          });
+          return;
+        }
+
         throw new Error(data?.error || `Could not generate pronunciation tip (${res.status})`);
       }
 
@@ -524,16 +715,35 @@ export default function ScenarioChatClient({ id }: { id: string }) {
         },
       }));
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to load tip.";
+      const isBusy =
+        err instanceof Error &&
+        (err.message.includes("503") ||
+          err.message.includes("429") ||
+          err.message.toLowerCase().includes("busy") ||
+          err.message.toLowerCase().includes("high demand") ||
+          err.message.toLowerCase().includes("unavailable"));
+
+      const friendlyMsg = isBusy
+        ? "The AI is busy, please try again in a few seconds"
+        : err instanceof Error
+        ? err.message
+        : "Failed to load tip.";
+
       setPracticeCardStates((prev) => ({
         ...prev,
         [phrase.id]: {
           ...prev[phrase.id],
           tip: null,
           isTipLoading: false,
-          tipError: msg,
+          tipError: friendlyMsg,
         },
       }));
+
+      setErrorBanner({
+        message: friendlyMsg,
+        isBusy,
+        onRetry: () => evaluatePronunciation(phrase, spokenText),
+      });
     }
   };
 
@@ -574,7 +784,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
   return (
     <div className="min-h-screen bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100 flex flex-col">
       {/* Header with Back button and Scenario details */}
-      <header className="border-b border-stone-200/80 dark:border-stone-800/80 sticky top-0 z-40 bg-white/85 dark:bg-stone-950/85 backdrop-blur-md">
+      <header className="border-b border-stone-200/80 dark:border-stone-800/80 sticky top-0 z-40 bg-white/90 dark:bg-stone-950/90 backdrop-blur-md">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <Link
@@ -596,40 +806,71 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                     ({scenario.kannadaTitle})
                   </span>
                 </h1>
-                <p className="text-xs text-stone-500 dark:text-stone-400">
-                  Role: <span className="font-medium text-amber-600 dark:text-amber-400">{scenario.characterName}</span> ({scenario.characterTitle})
-                </p>
+                <div className="flex items-center gap-2 text-xs text-stone-500 dark:text-stone-400">
+                  <span>
+                    Role: <span className="font-medium text-amber-600 dark:text-amber-400">{scenario.characterName}</span>
+                  </span>
+                  <span className="hidden sm:inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200/50">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    AI Resilient
+                  </span>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Mode Switcher Tabs */}
-          <div className="flex items-center p-1 rounded-xl bg-stone-100 dark:bg-stone-800/80 border border-stone-200/80 dark:border-stone-700/80">
+          {/* Header Controls: Speed, Cheat Sheet & Mode Switcher */}
+          <div className="flex items-center gap-2">
+            {/* Audio Speed Toggle (Unique feature: 1x / 0.75x Slow) */}
             <button
               type="button"
-              onClick={() => setActiveTab("chat")}
-              className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                activeTab === "chat"
-                  ? "bg-white dark:bg-stone-900 text-stone-950 dark:text-white shadow-xs"
-                  : "text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-white"
-              }`}
+              onClick={() => setAudioSpeed((prev) => (prev === 1.0 ? 0.75 : 1.0))}
+              title={`Audio Playback Speed: ${audioSpeed}x. Tap to toggle 1.0x (Normal) or 0.75x (Slow for learners)`}
+              className="px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 transition-all cursor-pointer flex items-center gap-1"
             >
-              💬 Conversation
+              <span>{audioSpeed === 0.75 ? "🐢" : "⚡"}</span>
+              <span className="font-mono">{audioSpeed}x</span>
             </button>
+
+            {/* Bengaluru Survival Cheat Sheet Trigger */}
             <button
               type="button"
-              onClick={() => setActiveTab("practice")}
-              className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
-                activeTab === "practice"
-                  ? "bg-white dark:bg-stone-900 text-stone-950 dark:text-white shadow-xs"
-                  : "text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-white"
-              }`}
+              onClick={() => setShowCheatSheet(true)}
+              title="Open Bengaluru Spoken Kannada Survival Phrases"
+              className="px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/50 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-300 border border-amber-200/60 dark:border-amber-800/60 transition-all cursor-pointer flex items-center gap-1"
             >
-              <span>🎯 Practice Phrases</span>
-              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 font-bold">
-                {scenarioPhrases.length}
-              </span>
+              <span>📖</span>
+              <span className="hidden sm:inline">Cheat Sheet</span>
             </button>
+
+            {/* Mode Switcher Tabs */}
+            <div className="flex items-center p-1 rounded-xl bg-stone-100 dark:bg-stone-800/80 border border-stone-200/80 dark:border-stone-700/80">
+              <button
+                type="button"
+                onClick={() => setActiveTab("chat")}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  activeTab === "chat"
+                    ? "bg-white dark:bg-stone-900 text-stone-950 dark:text-white shadow-xs"
+                    : "text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-white"
+                }`}
+              >
+                💬 Chat
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("practice")}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  activeTab === "practice"
+                    ? "bg-white dark:bg-stone-900 text-stone-950 dark:text-white shadow-xs"
+                    : "text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-white"
+                }`}
+              >
+                <span>🎯 Practice</span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 font-bold">
+                  {scenarioPhrases.length}
+                </span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -639,33 +880,45 @@ export default function ScenarioChatClient({ id }: { id: string }) {
             <div className="max-w-4xl mx-auto w-full flex items-center gap-2">
               <span>ℹ️</span>
               <span>
-                <strong>Notice:</strong> No local Kannada voice (kn-IN) is detected on this device. Audio playback will automatically use the Gemini TTS server fallback.
+                <strong>Notice:</strong> No local Kannada voice (kn-IN) is detected on this device. Audio playback will automatically use the resilient Gemini TTS server fallback.
               </span>
             </div>
           </div>
         )}
 
-        {/* Global error / notice banner (e.g. rate limit 429) */}
-        {errorMessage && (
-          <div className="bg-red-50 dark:bg-red-950/70 border-t border-b border-red-300 dark:border-red-800 px-4 py-3 text-xs text-red-900 dark:text-red-200">
+        {/* Global error / notice banner (Resilient with friendly message and Retry button) */}
+        {errorBanner && (
+          <div className="bg-amber-50 dark:bg-amber-950/80 border-t border-b border-amber-300 dark:border-amber-800 px-4 py-3 text-xs text-amber-950 dark:text-amber-200 transition-all">
             <div className="max-w-4xl mx-auto w-full flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
-                <span className="text-base shrink-0">⚠️</span>
-                <span className="font-medium leading-relaxed">{errorMessage}</span>
+                <span className="text-base shrink-0">{errorBanner.isBusy ? "⏳" : "⚠️"}</span>
+                <span className="font-medium leading-relaxed">{errorBanner.message}</span>
               </div>
-              <button
-                type="button"
-                onClick={() => setErrorMessage(null)}
-                className="px-2 py-0.5 rounded text-[11px] font-bold bg-red-100 hover:bg-red-200 dark:bg-red-900/60 dark:hover:bg-red-900 text-red-800 dark:text-red-200 shrink-0 cursor-pointer transition-colors"
-              >
-                Dismiss
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {errorBanner.onRetry && (
+                  <button
+                    type="button"
+                    onClick={errorBanner.onRetry}
+                    className="px-3 py-1 rounded-lg text-xs font-bold bg-amber-600 hover:bg-amber-700 active:scale-95 text-white cursor-pointer transition-all shadow-xs flex items-center gap-1"
+                  >
+                    <span>🔄</span>
+                    <span>Retry</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setErrorBanner(null)}
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/60 dark:hover:bg-amber-900 text-amber-800 dark:text-amber-200 shrink-0 cursor-pointer transition-colors"
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
           </div>
         )}
       </header>
 
-      {/* ================= TAB 1: CONVERSATION (UNTOUCHED CHAT FLOW) ================= */}
+      {/* ================= TAB 1: CONVERSATION (CHAT FLOW) ================= */}
       {activeTab === "chat" && (
         <>
           <main className="flex-1 max-w-4xl w-full mx-auto p-4 sm:p-6 overflow-y-auto space-y-5 flex flex-col justify-start">
@@ -710,9 +963,21 @@ export default function ScenarioChatClient({ id }: { id: string }) {
 
                     {/* 1. Kannada Script */}
                     <div>
-                      <p className="text-xs uppercase tracking-wider text-stone-400 dark:text-stone-500 font-semibold mb-1">
-                        Kannada (ಕನ್ನಡ)
-                      </p>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-xs uppercase tracking-wider text-stone-400 dark:text-stone-500 font-semibold">
+                          Kannada (ಕನ್ನಡ)
+                        </p>
+                        {message.kannada && (
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(message.kannada!, `kn-${message.id}`)}
+                            className="text-[11px] text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 transition-colors cursor-pointer"
+                            title="Copy Kannada text"
+                          >
+                            {copiedId === `kn-${message.id}` ? "✓ Copied" : "📋 Copy"}
+                          </button>
+                        )}
+                      </div>
                       <p className="text-lg sm:text-xl font-bold text-stone-950 dark:text-stone-50 leading-relaxed font-sans">
                         {message.kannada}
                       </p>
@@ -742,7 +1007,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                       </div>
                     )}
 
-                    {/* Replay / Speak Button */}
+                    {/* Replay / Speak Button & Audio Speed indicator */}
                     <div className="pt-1 flex items-center justify-between">
                       <button
                         type="button"
@@ -755,13 +1020,35 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                         title="Listen to pronunciation"
                       >
                         <span>{isCurrentlySpeaking ? "🔊" : "🔈"}</span>
-                        <span>{isCurrentlySpeaking ? "Playing audio..." : "Listen / Replay"}</span>
+                        <span>{isCurrentlySpeaking ? "Playing audio..." : `Listen / Replay (${audioSpeed}x)`}</span>
                       </button>
                     </div>
                   </div>
                 </div>
               );
             })}
+
+            {/* Inline Friendly Retry Banner inside Chat Stream if AI failed to respond */}
+            {lastFailedChat && !isLoading && (
+              <div className="flex items-start gap-3 max-w-[95%] sm:max-w-[85%]">
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl bg-amber-100 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-800 shrink-0 mt-0.5">
+                  ⏳
+                </div>
+                <div className="flex-1 rounded-2xl rounded-tl-xs bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 p-4 shadow-sm space-y-2.5">
+                  <p className="text-xs font-semibold text-amber-900 dark:text-amber-200">
+                    The AI is busy, please try again in a few seconds
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => executeChatRequest(lastFailedChat.text, lastFailedChat.history)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-xs transition-transform active:scale-95 cursor-pointer"
+                  >
+                    <span>🔄</span>
+                    <span>Retry</span>
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Loading State / Typing indicator */}
             {isLoading && (
@@ -839,6 +1126,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                 {/* Fallback Text Input */}
                 <div className="flex-1 relative">
                   <input
+                    ref={inputRef}
                     type="text"
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
@@ -939,7 +1227,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                 Key Phrases for {scenario.title}
               </h3>
               <span className="text-xs text-stone-400 dark:text-stone-500">
-                Tap 🎙️ Practice to speak & get AI feedback
+                Audio Speed: {audioSpeed}x • Tap 🎙️ Practice to speak
               </span>
             </div>
 
@@ -964,6 +1252,14 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                         <h4 className="text-xl sm:text-2xl font-bold text-stone-950 dark:text-white font-sans">
                           {phrase.kannada}
                         </h4>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(phrase.kannada, `prac-${phrase.id}`)}
+                          className="text-xs text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 cursor-pointer ml-1"
+                          title="Copy Kannada phrase"
+                        >
+                          {copiedId === `prac-${phrase.id}` ? "✓ Copied" : "📋"}
+                        </button>
                       </div>
                       <p className="text-xs text-amber-700 dark:text-amber-300 font-medium italic">
                         &ldquo;{phrase.romanization}&rdquo;
@@ -996,7 +1292,6 @@ export default function ScenarioChatClient({ id }: { id: string }) {
 
                   {/* Audio & Practice Action Buttons */}
                   <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-stone-100 dark:border-stone-800/80">
-                    {/* 5. Hear it again button */}
                     <button
                       type="button"
                       onClick={() => speakKannada(phrase.kannada, `practice-${phrase.id}`)}
@@ -1008,10 +1303,9 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                       title="Hear target pronunciation"
                     >
                       <span>{isSpeakingAudio ? "🔊" : "🔈"}</span>
-                      <span>{isSpeakingAudio ? "Playing audio..." : "Hear it again"}</span>
+                      <span>{isSpeakingAudio ? "Playing audio..." : `Hear it again (${audioSpeed}x)`}</span>
                     </button>
 
-                    {/* 2. Practice Button (Mic kn-IN) */}
                     <button
                       type="button"
                       onClick={() =>
@@ -1050,7 +1344,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                     </div>
                   )}
 
-                  {/* 3. Word-level Diff & Score Feedback Card */}
+                  {/* Word-level Diff & Score Feedback Card */}
                   {state?.scoreResult && (
                     <div className="rounded-xl bg-stone-50 dark:bg-stone-800/50 border border-stone-200 dark:border-stone-700/60 p-4 space-y-3">
                       {/* Score Indicator */}
@@ -1086,7 +1380,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                           Word-by-word Breakdown
                         </p>
                         <div className="flex flex-wrap gap-2 items-center">
-                          {state.scoreResult.targetWords.map((item, wIdx) => {
+                          {state.scoreResult.targetWords.map((item: WordDiffResult, wIdx: number) => {
                             if (item.status === "matched") {
                               return (
                                 <span
@@ -1128,7 +1422,7 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                         </span>
                       </div>
 
-                      {/* 4. AI Feedback Tip from /api/feedback */}
+                      {/* AI Feedback Tip from /api/feedback with resilient retry */}
                       <div className="pt-2 border-t border-stone-200/60 dark:border-stone-700/60">
                         {state.isTipLoading ? (
                           <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 font-medium">
@@ -1150,12 +1444,21 @@ export default function ScenarioChatClient({ id }: { id: string }) {
                             </div>
                           </div>
                         ) : state.tipError ? (
-                          <div className="rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/60 p-2.5 text-xs text-red-800 dark:text-red-300 flex items-start gap-2">
-                            <span className="shrink-0">⚠️</span>
-                            <div>
-                              <span className="font-semibold block text-[11px] mb-0.5">Notice:</span>
-                              <span className="leading-relaxed">{state.tipError}</span>
+                          <div className="rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800/70 p-3.5 flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2">
+                              <span className="text-base shrink-0">⏳</span>
+                              <p className="text-xs text-amber-900 dark:text-amber-200 font-medium">
+                                {state.tipError}
+                              </p>
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => evaluatePronunciation(phrase, state.transcript)}
+                              className="inline-flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white shrink-0 cursor-pointer shadow-xs transition-transform active:scale-95"
+                            >
+                              <span>🔄</span>
+                              <span>Retry</span>
+                            </button>
                           </div>
                         ) : null}
                       </div>
@@ -1166,6 +1469,82 @@ export default function ScenarioChatClient({ id }: { id: string }) {
             })}
           </div>
         </main>
+      )}
+
+      {/* ================= BENGALURU SURVIVAL CHEAT SHEET MODAL (UNIQUE ADDITION) ================= */}
+      {showCheatSheet && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-fadeIn">
+          <div className="bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-2xl max-w-lg w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-stone-200 dark:border-stone-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">📖</span>
+                <div>
+                  <h3 className="font-bold text-sm sm:text-base text-stone-950 dark:text-white">
+                    Bengaluru Spoken Kannada Cheat Sheet
+                  </h3>
+                  <p className="text-[11px] text-stone-500 dark:text-stone-400">
+                    Essential everyday phrases to speak confidently
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCheatSheet(false)}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-3 flex-1">
+              {BENGALURU_CHEAT_SHEET.map((item, idx) => (
+                <div
+                  key={idx}
+                  className="rounded-xl border border-stone-100 dark:border-stone-800 bg-stone-50 dark:bg-stone-800/40 p-3.5 flex items-center justify-between gap-3 hover:border-amber-400/40 transition-colors"
+                >
+                  <div className="space-y-0.5">
+                    <p className="text-base font-bold text-stone-900 dark:text-white font-sans">
+                      {item.kannada}
+                    </p>
+                    <p className="text-xs text-amber-700 dark:text-amber-300 font-medium italic">
+                      &ldquo;{item.romanization}&rdquo;
+                    </p>
+                    <p className="text-[11px] text-stone-500 dark:text-stone-400">
+                      {item.english}
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => insertCheatPhrase(item.romanization)}
+                      className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 hover:bg-stone-800 cursor-pointer transition-colors"
+                    >
+                      Use in Chat
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => speakKannada(item.kannada, `cheat-${idx}`)}
+                      className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-amber-100 text-amber-900 dark:bg-amber-950/80 dark:text-amber-200 hover:bg-amber-200 cursor-pointer transition-colors flex items-center justify-center gap-1"
+                    >
+                      <span>🔈</span>
+                      <span>Listen</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="px-5 py-3 border-t border-stone-100 dark:border-stone-800 bg-stone-50 dark:bg-stone-900/50 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowCheatSheet(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-stone-200 dark:bg-stone-800 text-stone-800 dark:text-stone-200 hover:bg-stone-300 dark:hover:bg-stone-700 cursor-pointer transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

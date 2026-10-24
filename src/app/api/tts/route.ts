@@ -1,11 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { checkRateLimit, validateRequestBody } from "@/lib/rateLimit";
+import {
+  DEFAULT_GEMINI_TTS_MODEL,
+  DEFAULT_GEMINI_TTS_FALLBACK_MODEL,
+  GEMINI_TTS_MODEL,
+  GEMINI_TTS_FALLBACK_MODEL,
+  executeWithRetryAndFallback,
+  isRetryableGeminiError,
+  extractGeminiErrorMessage,
+} from "@/lib/gemini";
 
-// Official Gemini TTS model from Google AI documentation:
-// https://ai.google.dev/gemini-api/docs/models/gemini
-export const DEFAULT_GEMINI_TTS_MODEL = "gemini-3.8-flash-tts";
-export const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL || DEFAULT_GEMINI_TTS_MODEL;
+// Re-export constants for external consumers & testing
+export {
+  DEFAULT_GEMINI_TTS_MODEL,
+  DEFAULT_GEMINI_TTS_FALLBACK_MODEL,
+  GEMINI_TTS_MODEL,
+  GEMINI_TTS_FALLBACK_MODEL,
+};
 
 /**
  * Converts raw PCM audio buffer to a playable standard 16-bit WAV file buffer.
@@ -84,71 +96,87 @@ export async function POST(req: NextRequest) {
 
     const ai = new GoogleGenAI({ apiKey });
 
-    // Request speech audio using Gemini TTS model
     let audioBytes: Buffer | null = null;
     let mimeType = "audio/wav";
+    let modelUsed = GEMINI_TTS_MODEL;
 
     try {
-      const response = await ai.models.generateContent({
-        model: GEMINI_TTS_MODEL,
-        contents: text.trim(),
-        config: {
-          responseModalities: ["AUDIO"],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: {
-                voiceName: "Kore",
+      const result = await executeWithRetryAndFallback({
+        primaryModel: GEMINI_TTS_MODEL,
+        fallbackModel: GEMINI_TTS_FALLBACK_MODEL,
+        operation: async (model) => {
+          const response = await ai.models.generateContent({
+            model,
+            contents: text.trim(),
+            config: {
+              responseModalities: ["AUDIO"],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName: "Kore",
+                  },
+                },
               },
             },
-          },
+          });
+
+          let bytes: Buffer | null = null;
+          let mime = "audio/wav";
+
+          if (response.candidates?.[0]?.content?.parts) {
+            for (const part of response.candidates[0].content.parts) {
+              if (part.inlineData?.data) {
+                mime = part.inlineData.mimeType || "audio/wav";
+                bytes = Buffer.from(part.inlineData.data, "base64");
+                break;
+              }
+            }
+          }
+
+          if (!bytes || bytes.length === 0) {
+            throw new Error(`TTS model [${model}] did not return audio data for this text.`);
+          }
+
+          return { bytes, mime };
         },
       });
 
-      if (response.candidates?.[0]?.content?.parts) {
-        for (const part of response.candidates[0].content.parts) {
-          if (part.inlineData?.data) {
-            mimeType = part.inlineData.mimeType || "audio/wav";
-            audioBytes = Buffer.from(part.inlineData.data, "base64");
-            break;
-          }
-        }
-      }
+      audioBytes = result.data.bytes;
+      mimeType = result.data.mime;
+      modelUsed = result.modelUsed;
     } catch (err: unknown) {
-      console.error(`Gemini TTS error with model [${GEMINI_TTS_MODEL}]:`, err);
-      let errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`Gemini TTS error:`, err);
+      const isBusy = (err as Record<string, unknown>)?.isBusy || isRetryableGeminiError(err);
+
+      if (isBusy) {
+        return NextResponse.json(
+          {
+            error: "The AI is busy, please try again in a few seconds",
+            isBusy: true,
+            canRetry: true,
+          },
+          { status: 503 }
+        );
+      }
+
+      let errorMsg = extractGeminiErrorMessage(err);
       let status = 502;
+      const anyErr = err as Record<string, unknown>;
+      const code = anyErr?.status || anyErr?.statusCode;
 
-      try {
-        const parsed = JSON.parse(errorMsg);
-        if (parsed?.error) {
-          const code = parsed.error.code;
-          const msg = parsed.error.message || "";
-          const statusStr = parsed.error.status || "";
-
-          if (code === 403 || statusStr === "PERMISSION_DENIED") {
-            errorMsg = `Your Google Cloud / AI Studio project has been denied access (403 Permission Denied). Please check your API key in Google AI Studio.`;
-            status = 403;
-          } else if (code === 401 || statusStr === "UNAUTHENTICATED") {
-            errorMsg = `API key not valid or unauthenticated (401). Please verify your GEMINI_API_KEY in .env.local.`;
-            status = 401;
-          } else if (code === 404 || statusStr === "NOT_FOUND") {
-            errorMsg = `TTS Model '${GEMINI_TTS_MODEL}' was not found (404).`;
-            status = 404;
-          } else if (code === 429 || statusStr === "RESOURCE_EXHAUSTED") {
-            errorMsg = `TTS rate limit or quota exceeded (429). Please wait a moment.`;
-            status = 429;
-          } else {
-            errorMsg = `${msg} (${code || statusStr})`;
-          }
-        }
-      } catch {
-        // Not a JSON error string
+      if (code === 401 || errorMsg.includes("401") || errorMsg.includes("API key not valid")) {
+        status = 401;
+        errorMsg = "API key not valid or unauthenticated (401). Please verify your GEMINI_API_KEY in .env.local.";
+      } else if (code === 403 || errorMsg.includes("403") || errorMsg.includes("PERMISSION_DENIED")) {
+        status = 403;
+        errorMsg = "Your project has been denied access (403 Permission Denied). Please check your API key.";
       }
 
       return NextResponse.json(
         {
-          error: `Gemini TTS Error [${GEMINI_TTS_MODEL}]: ${errorMsg}`,
-          model: GEMINI_TTS_MODEL,
+          error: `Gemini TTS Error: ${errorMsg}`,
+          model: modelUsed,
+          canRetry: false,
         },
         { status }
       );
@@ -157,8 +185,8 @@ export async function POST(req: NextRequest) {
     if (!audioBytes || audioBytes.length === 0) {
       return NextResponse.json(
         {
-          error: `Gemini TTS [${GEMINI_TTS_MODEL}] did not return audio data for this text.`,
-          model: GEMINI_TTS_MODEL,
+          error: `Gemini TTS did not return audio data.`,
+          model: modelUsed,
         },
         { status: 502 }
       );
