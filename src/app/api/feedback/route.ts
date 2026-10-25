@@ -7,6 +7,8 @@ import {
   DEFAULT_GEMINI_FALLBACK_MODEL,
   GEMINI_MODEL,
   GEMINI_FALLBACK_MODEL,
+  DEFAULT_GEMINI_ATTEMPT_TIMEOUT_MS,
+  DEFAULT_GEMINI_RETRY_DELAYS,
   executeWithRetryAndFallback,
   isRetryableGeminiError,
   extractGeminiErrorMessage,
@@ -18,6 +20,8 @@ export {
   DEFAULT_GEMINI_FALLBACK_MODEL,
   GEMINI_MODEL,
   GEMINI_FALLBACK_MODEL,
+  DEFAULT_GEMINI_ATTEMPT_TIMEOUT_MS,
+  DEFAULT_GEMINI_RETRY_DELAYS,
 };
 
 function extractJson(raw: string) {
